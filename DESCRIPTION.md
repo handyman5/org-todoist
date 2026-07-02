@@ -19,7 +19,8 @@ What is included:
   - Initializes installed packages first so normal Emacs package dependencies such as `s`, `dash`, and `ts` are available.
   - Allows workload sizing overrides via environment variables.
 - `Makefile`
-  - Adds a `bench-synthetic` target so the benchmark can be run with one command.
+  - Adds a `bench-synthetic` target sized for routine iteration.
+  - Adds a `bench-synthetic-full` target for a larger stress workload.
 
 The benchmark does not try to model every real-world detail perfectly. Its purpose is to provide a stable, repeatable workload that exercises the same broad hot paths:
 
@@ -36,6 +37,15 @@ Suggested invocation:
 make bench-synthetic
 ```
 
+Default workload:
+
+- `15` projects
+- `4` sections per project
+- `18` tasks per section
+- `1` comment per task
+
+That default is intended to be large enough for an iteration-scale run in roughly the 1-2 minute range, while still being practical for repeated local benchmarking.
+
 Optional workload overrides:
 
 ```bash
@@ -46,10 +56,16 @@ ORG_TODOIST_BENCH_COMMENTS_PER_TASK=3 \
 make bench-synthetic
 ```
 
+To run the larger stress preset:
+
+```bash
+make bench-synthetic-full
+```
+
 Expected output shape:
 
 ```json
-{"projects":20,"sections_per_project":5,"tasks_per_section":40,"comments_per_task":2,"push_seconds":...,"parse_seconds":...}
+{"projects":15,"sections_per_project":4,"tasks_per_section":18,"comments_per_task":1,"push_seconds":...,"parse_seconds":...}
 ```
 
 This branch is intended to land before the optimization branches so later PRs can cite benchmark deltas from a shared harness.

@@ -10,22 +10,22 @@
   "Synthetic benchmark helpers for org-todoist."
   :group 'org-todoist)
 
-(defcustom org-todoist-benchmark-project-count 20
+(defcustom org-todoist-benchmark-project-count 15
   "Number of synthetic projects to generate."
   :type 'integer
   :group 'org-todoist-benchmark)
 
-(defcustom org-todoist-benchmark-sections-per-project 5
+(defcustom org-todoist-benchmark-sections-per-project 4
   "Number of synthetic sections to generate per project."
   :type 'integer
   :group 'org-todoist-benchmark)
 
-(defcustom org-todoist-benchmark-tasks-per-section 40
+(defcustom org-todoist-benchmark-tasks-per-section 18
   "Number of synthetic tasks to generate per section."
   :type 'integer
   :group 'org-todoist-benchmark)
 
-(defcustom org-todoist-benchmark-comments-per-task 2
+(defcustom org-todoist-benchmark-comments-per-task 1
   "Number of synthetic comments to generate per task."
   :type 'integer
   :group 'org-todoist-benchmark)
