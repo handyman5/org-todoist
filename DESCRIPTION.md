@@ -15,6 +15,7 @@ What is included:
   - Prints a compact JSON result so it is easy to compare across commits and branches.
 - `bench/run-synthetic-benchmark.el`
   - Loads the package and benchmark harness in batch mode.
+  - Initializes installed packages first so normal Emacs package dependencies such as `s`, `dash`, and `ts` are available.
   - Allows workload sizing overrides via environment variables.
 - `Makefile`
   - Adds a `bench-synthetic` target so the benchmark can be run with one command.

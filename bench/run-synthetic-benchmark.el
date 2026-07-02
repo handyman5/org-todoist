@@ -1,6 +1,9 @@
 (setq load-path (cons (file-name-directory (directory-file-name default-directory))
                       load-path))
 
+(require 'package)
+(package-initialize)
+
 (setq org-todoist-benchmark-skip-auto-run t)
 
 (load-file (expand-file-name "org-todoist.el" default-directory))
