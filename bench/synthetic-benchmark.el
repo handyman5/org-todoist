@@ -2,38 +2,22 @@
 
 (require 'benchmark)
 (require 'json)
-(require 'org)
-(require 'org-element)
 (require 'org-todoist)
 
-(defgroup org-todoist-benchmark nil
-  "Synthetic benchmark helpers for org-todoist."
-  :group 'org-todoist)
+(defvar org-todoist-benchmark-project-count 15
+  "Number of synthetic projects to generate.")
 
-(defcustom org-todoist-benchmark-project-count 15
-  "Number of synthetic projects to generate."
-  :type 'integer
-  :group 'org-todoist-benchmark)
+(defvar org-todoist-benchmark-sections-per-project 4
+  "Number of synthetic sections to generate per project.")
 
-(defcustom org-todoist-benchmark-sections-per-project 4
-  "Number of synthetic sections to generate per project."
-  :type 'integer
-  :group 'org-todoist-benchmark)
+(defvar org-todoist-benchmark-tasks-per-section 18
+  "Number of synthetic tasks to generate per section.")
 
-(defcustom org-todoist-benchmark-tasks-per-section 18
-  "Number of synthetic tasks to generate per section."
-  :type 'integer
-  :group 'org-todoist-benchmark)
+(defvar org-todoist-benchmark-comments-per-task 1
+  "Number of synthetic comments to generate per task.")
 
-(defcustom org-todoist-benchmark-comments-per-task 1
-  "Number of synthetic comments to generate per task."
-  :type 'integer
-  :group 'org-todoist-benchmark)
-
-(defcustom org-todoist-benchmark-show-progress noninteractive
-  "Whether the synthetic benchmark should print phase progress updates."
-  :type 'boolean
-  :group 'org-todoist-benchmark)
+(defvar org-todoist-benchmark-show-progress noninteractive
+  "Whether the synthetic benchmark should print phase progress updates.")
 
 (defun org-todoist-benchmark--progress (fmt &rest args)
   "Print a benchmark progress message built from FMT and ARGS."
@@ -119,7 +103,6 @@
 
 (defun org-todoist-benchmark-run ()
   "Run a synthetic org-todoist benchmark and print the results."
-  (interactive)
   (let* ((org-todoist-storage-dir (make-temp-file "org-todoist-bench-state-" t))
          (org-todoist-file (make-temp-file "org-todoist-bench-" nil ".org"))
          (started-at (float-time))
@@ -194,6 +177,5 @@
       (ignore-errors (delete-file org-todoist-file))
       (ignore-errors (delete-directory org-todoist-storage-dir t)))))
 
-(when (and noninteractive
-           (not (bound-and-true-p org-todoist-benchmark-skip-auto-run)))
+(when noninteractive
   (org-todoist-benchmark-run))
