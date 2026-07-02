@@ -1,0 +1,156 @@
+;;; synthetic-benchmark.el --- Synthetic org-todoist benchmark -*- lexical-binding: t; -*-
+
+(require 'benchmark)
+(require 'json)
+(require 'org)
+(require 'org-element)
+(require 'org-todoist)
+
+(defgroup org-todoist-benchmark nil
+  "Synthetic benchmark helpers for org-todoist."
+  :group 'org-todoist)
+
+(defcustom org-todoist-benchmark-project-count 20
+  "Number of synthetic projects to generate."
+  :type 'integer
+  :group 'org-todoist-benchmark)
+
+(defcustom org-todoist-benchmark-sections-per-project 5
+  "Number of synthetic sections to generate per project."
+  :type 'integer
+  :group 'org-todoist-benchmark)
+
+(defcustom org-todoist-benchmark-tasks-per-section 40
+  "Number of synthetic tasks to generate per section."
+  :type 'integer
+  :group 'org-todoist-benchmark)
+
+(defcustom org-todoist-benchmark-comments-per-task 2
+  "Number of synthetic comments to generate per task."
+  :type 'integer
+  :group 'org-todoist-benchmark)
+
+(defun org-todoist-benchmark--project-id (project)
+  (format "project-%02d" project))
+
+(defun org-todoist-benchmark--section-id (project section)
+  (format "section-%02d-%02d" project section))
+
+(defun org-todoist-benchmark--task-id (project section task)
+  (format "task-%02d-%02d-%04d" project section task))
+
+(defun org-todoist-benchmark--headline (level title props &optional todo)
+  (concat (make-string level ?*)
+          " "
+          (if todo (concat todo " ") "")
+          title
+          "\n:PROPERTIES:\n"
+          (mapconcat (lambda (kv) (format ":%s: %s" (car kv) (cdr kv))) props "\n")
+          "\n:END:\n"))
+
+(defun org-todoist-benchmark--org-string ()
+  (let ((chunks (list "#+title: Todoist\n#+STARTUP: hidedrawers\n")))
+    (dotimes (project org-todoist-benchmark-project-count)
+      (push (org-todoist-benchmark--headline
+             1
+             (format "Project %02d" project)
+             `(("TODOIST_TYPE" . "PROJECT")
+               ("tid" . ,(org-todoist-benchmark--project-id project))))
+            chunks)
+      (dotimes (section org-todoist-benchmark-sections-per-project)
+        (push (org-todoist-benchmark--headline
+               2
+               (format "Section %02d-%02d" project section)
+               `(("TODOIST_TYPE" . "SECTION")
+                 ("tid" . ,(org-todoist-benchmark--section-id project section))))
+              chunks)
+        (dotimes (task org-todoist-benchmark-tasks-per-section)
+          (let ((task-id (org-todoist-benchmark--task-id project section task)))
+            (push (org-todoist-benchmark--headline
+                   3
+                   (format "Task %02d-%02d-%04d" project section task)
+                   `(("TODOIST_TYPE" . "TASK")
+                     ("tid" . ,task-id)
+                     ("priority" . "1"))
+                   "TODO")
+                  chunks)
+            (push (format "Synthetic description for %s.\n\n" task-id) chunks)))))
+    (apply #'concat (nreverse chunks))))
+
+(defun org-todoist-benchmark--response ()
+  (let (projects sections items notes)
+    (dotimes (project org-todoist-benchmark-project-count)
+      (let ((project-id (org-todoist-benchmark--project-id project)))
+        (push `((id . ,project-id)
+                (name . ,(format "Project %02d" project)))
+              projects)
+        (dotimes (section org-todoist-benchmark-sections-per-project)
+          (let ((section-id (org-todoist-benchmark--section-id project section)))
+            (push `((id . ,section-id)
+                    (project_id . ,project-id)
+                    (name . ,(format "Section %02d-%02d" project section)))
+                  sections)
+            (dotimes (task org-todoist-benchmark-tasks-per-section)
+              (let ((task-id (org-todoist-benchmark--task-id project section task)))
+                (push `((id . ,task-id)
+                        (project_id . ,project-id)
+                        (section_id . ,section-id)
+                        (content . ,(format "Task %02d-%02d-%04d" project section task))
+                        (description . ,(format "Synthetic description for %s." task-id))
+                        (priority . 1)
+                        (labels . [])
+                        (checked . :json-false)
+                        (is_deleted . :json-false))
+                      items)
+                (dotimes (comment org-todoist-benchmark-comments-per-task)
+                  (push `((item_id . ,task-id)
+                          (content . ,(format "Comment %d on %s" comment task-id))
+                          (posted_at . "2026-07-01T00:00:00.0Z"))
+                        notes))))))))
+    `((items . ,(vconcat (nreverse items)))
+      (projects . ,(vconcat (nreverse projects)))
+      (sections . ,(vconcat (nreverse sections)))
+      (collaborators . [])
+      (notes . ,(vconcat (nreverse notes)))
+      (temp_id_mapping . [])
+      (sync_token . "synthetic-token"))))
+
+(defun org-todoist-benchmark-run ()
+  "Run a synthetic org-todoist benchmark and print the results."
+  (interactive)
+  (let* ((org-todoist-storage-dir (make-temp-file "org-todoist-bench-state-" t))
+         (org-todoist-file (make-temp-file "org-todoist-bench-" nil ".org"))
+         (baseline (org-todoist-benchmark--org-string))
+         (response (org-todoist-benchmark--response))
+         ast
+         push-time
+         parse-time)
+    (unwind-protect
+        (progn
+          (with-temp-file org-todoist-file
+            (insert baseline))
+          (with-temp-file (expand-file-name "SYNC-BUFFER" org-todoist-storage-dir)
+            (insert baseline))
+          (setq ast (org-todoist--file-ast))
+          (setq push-time
+                (benchmark-run 1
+                  (org-todoist--push ast (org-todoist--get-last-sync-buffer-ast))))
+          (setq parse-time
+                (benchmark-run 1
+                  (org-todoist--parse-response response ast)))
+          (princ
+           (json-encode
+            `((projects . ,org-todoist-benchmark-project-count)
+              (sections_per_project . ,org-todoist-benchmark-sections-per-project)
+              (tasks_per_section . ,org-todoist-benchmark-tasks-per-section)
+              (comments_per_task . ,org-todoist-benchmark-comments-per-task)
+              (push_seconds . ,(car push-time))
+              (parse_seconds . ,(car parse-time))
+              (push_gc_runs . ,(nth 1 push-time))
+              (parse_gc_runs . ,(nth 1 parse-time)))))
+          (princ "\n"))
+      (ignore-errors (delete-file org-todoist-file))
+      (ignore-errors (delete-directory org-todoist-storage-dir t)))))
+
+(when noninteractive
+  (org-todoist-benchmark-run))
