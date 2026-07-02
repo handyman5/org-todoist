@@ -30,6 +30,32 @@
   :type 'integer
   :group 'org-todoist-benchmark)
 
+(defcustom org-todoist-benchmark-show-progress noninteractive
+  "Whether the synthetic benchmark should print phase progress updates."
+  :type 'boolean
+  :group 'org-todoist-benchmark)
+
+(defun org-todoist-benchmark--task-count ()
+  "Return the total number of synthetic tasks in the current workload."
+  (* org-todoist-benchmark-project-count
+     org-todoist-benchmark-sections-per-project
+     org-todoist-benchmark-tasks-per-section))
+
+(defun org-todoist-benchmark--comment-count ()
+  "Return the total number of synthetic comments in the current workload."
+  (* (org-todoist-benchmark--task-count)
+     org-todoist-benchmark-comments-per-task))
+
+(defun org-todoist-benchmark--progress (fmt &rest args)
+  "Print a benchmark progress message built from FMT and ARGS."
+  (when org-todoist-benchmark-show-progress
+    (princ (apply #'format (concat "[org-todoist-bench] " fmt "\n") args)
+           'external-debugging-output)))
+
+(defun org-todoist-benchmark--format-seconds (seconds)
+  "Format SECONDS for compact progress output."
+  (format "%.3fs" seconds))
+
 (defun org-todoist-benchmark--project-id (project)
   (format "project-%02d" project))
 
@@ -120,24 +146,59 @@
   (interactive)
   (let* ((org-todoist-storage-dir (make-temp-file "org-todoist-bench-state-" t))
          (org-todoist-file (make-temp-file "org-todoist-bench-" nil ".org"))
-         (baseline (org-todoist-benchmark--org-string))
-         (response (org-todoist-benchmark--response))
+         (started-at (float-time))
+         baseline
+         response
          ast
+         phase-start
          push-time
          parse-time)
     (unwind-protect
         (progn
+          (org-todoist-benchmark--progress
+           "starting workload: %d projects, %d sections/project, %d tasks/section, %d comments/task (%d tasks, %d comments total)"
+           org-todoist-benchmark-project-count
+           org-todoist-benchmark-sections-per-project
+           org-todoist-benchmark-tasks-per-section
+           org-todoist-benchmark-comments-per-task
+           (org-todoist-benchmark--task-count)
+           (org-todoist-benchmark--comment-count))
+          (setq phase-start (float-time))
+          (org-todoist-benchmark--progress "[1/4] generating synthetic org and response payloads")
+          (setq baseline (org-todoist-benchmark--org-string))
+          (setq response (org-todoist-benchmark--response))
+          (org-todoist-benchmark--progress
+           "[1/4] done in %s"
+           (org-todoist-benchmark--format-seconds (- (float-time) phase-start)))
           (with-temp-file org-todoist-file
             (insert baseline))
           (with-temp-file (expand-file-name "SYNC-BUFFER" org-todoist-storage-dir)
             (insert baseline))
+          (setq phase-start (float-time))
+          (org-todoist-benchmark--progress "[2/4] parsing org file into an AST")
           (setq ast (org-todoist--file-ast))
+          (org-todoist-benchmark--progress
+           "[2/4] done in %s"
+           (org-todoist-benchmark--format-seconds (- (float-time) phase-start)))
+          (setq phase-start (float-time))
+          (org-todoist-benchmark--progress "[3/4] benchmarking push generation")
           (setq push-time
                 (benchmark-run 1
                   (org-todoist--push ast (org-todoist--get-last-sync-buffer-ast))))
+          (org-todoist-benchmark--progress
+           "[3/4] done in %s"
+           (org-todoist-benchmark--format-seconds (car push-time)))
+          (setq phase-start (float-time))
+          (org-todoist-benchmark--progress "[4/4] benchmarking response parsing")
           (setq parse-time
                 (benchmark-run 1
                   (org-todoist--parse-response response ast)))
+          (org-todoist-benchmark--progress
+           "[4/4] done in %s"
+           (org-todoist-benchmark--format-seconds (car parse-time)))
+          (org-todoist-benchmark--progress
+           "finished in %s total"
+           (org-todoist-benchmark--format-seconds (- (float-time) started-at)))
           (princ
            (json-encode
             `((projects . ,org-todoist-benchmark-project-count)

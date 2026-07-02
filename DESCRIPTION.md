@@ -13,6 +13,7 @@ What is included:
   - Generates a matching fake Todoist sync response in memory.
   - Measures `org-todoist--push` and `org-todoist--parse-response` independently with `benchmark-run`.
   - Prints a compact JSON result so it is easy to compare across commits and branches.
+  - Prints coarse phase progress in batch mode so long runs do not look hung.
 - `bench/run-synthetic-benchmark.el`
   - Loads the package and benchmark harness in batch mode.
   - Initializes installed packages first so normal Emacs package dependencies such as `s`, `dash`, and `ts` are available.
