@@ -110,9 +110,9 @@
     `((items . ,(vconcat (nreverse items)))
       (projects . ,(vconcat (nreverse projects)))
       (sections . ,(vconcat (nreverse sections)))
-      (collaborators . [])
+      (collaborators . ,[])
       (notes . ,(vconcat (nreverse notes)))
-      (temp_id_mapping . [])
+      (temp_id_mapping . nil)
       (sync_token . "synthetic-token"))))
 
 (defun org-todoist-benchmark-run ()
