@@ -1,11 +1,20 @@
 .PHONY: bench-synthetic bench-synthetic-extreme
 
+EMACS ?= emacs
+BENCH_LOAD = \
+	--batch \
+	--eval "(require 'package)" \
+	--eval "(package-initialize)"
+BENCH_BASE = $(EMACS) $(BENCH_LOAD) -l ./org-todoist.el
+BENCH_RUN = -l ./bench/synthetic-benchmark.el
+
 bench-synthetic:
-	emacs --batch -l ./bench/run-synthetic-benchmark.el
+	$(BENCH_BASE) $(BENCH_RUN)
 
 bench-synthetic-extreme:
-	ORG_TODOIST_BENCH_PROJECTS=20 \
-	ORG_TODOIST_BENCH_SECTIONS_PER_PROJECT=5 \
-	ORG_TODOIST_BENCH_TASKS_PER_SECTION=40 \
-	ORG_TODOIST_BENCH_COMMENTS_PER_TASK=2 \
-	emacs --batch -l ./bench/run-synthetic-benchmark.el
+	$(BENCH_BASE) \
+	--eval "(setq org-todoist-benchmark-project-count 20 \
+	              org-todoist-benchmark-sections-per-project 5 \
+	              org-todoist-benchmark-tasks-per-section 40 \
+	              org-todoist-benchmark-comments-per-task 2)" \
+	$(BENCH_RUN)

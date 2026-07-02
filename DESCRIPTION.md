@@ -14,13 +14,10 @@ What is included:
   - Measures `org-todoist--push` and `org-todoist--parse-response` independently with `benchmark-run`.
   - Prints a compact JSON result so it is easy to compare across commits and branches.
   - Prints coarse phase progress in batch mode so long runs do not look hung.
-- `bench/run-synthetic-benchmark.el`
-  - Loads the package and benchmark harness in batch mode.
-  - Initializes installed packages first so normal Emacs package dependencies such as `s`, `dash`, and `ts` are available.
-  - Allows workload sizing overrides via environment variables.
 - `Makefile`
   - Adds a `bench-synthetic` target sized for routine iteration.
-  - Adds a `bench-synthetic-full` target for a larger stress workload.
+  - Loads the package directly in batch Emacs and initializes packages before the benchmark auto-runs.
+  - Adds a `bench-synthetic-extreme` target for a larger stress workload.
 
 The benchmark does not try to model every real-world detail perfectly. Its purpose is to provide a stable, repeatable workload that exercises the same broad hot paths:
 
@@ -49,17 +46,21 @@ That default is intended to be large enough for an iteration-scale run in roughl
 Optional workload overrides:
 
 ```bash
-ORG_TODOIST_BENCH_PROJECTS=40 \
-ORG_TODOIST_BENCH_SECTIONS_PER_PROJECT=8 \
-ORG_TODOIST_BENCH_TASKS_PER_SECTION=60 \
-ORG_TODOIST_BENCH_COMMENTS_PER_TASK=3 \
-make bench-synthetic
+emacs --batch \
+  --eval "(require 'package)" \
+  --eval "(package-initialize)" \
+  -l ./org-todoist.el \
+  --eval "(setq org-todoist-benchmark-project-count 40
+                org-todoist-benchmark-sections-per-project 8
+                org-todoist-benchmark-tasks-per-section 60
+                org-todoist-benchmark-comments-per-task 3)" \
+  -l ./bench/synthetic-benchmark.el
 ```
 
 To run the larger stress preset:
 
 ```bash
-make bench-synthetic-full
+make bench-synthetic-extreme
 ```
 
 Expected output shape:

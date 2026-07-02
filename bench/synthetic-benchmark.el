@@ -35,35 +35,11 @@
   :type 'boolean
   :group 'org-todoist-benchmark)
 
-(defun org-todoist-benchmark--task-count ()
-  "Return the total number of synthetic tasks in the current workload."
-  (* org-todoist-benchmark-project-count
-     org-todoist-benchmark-sections-per-project
-     org-todoist-benchmark-tasks-per-section))
-
-(defun org-todoist-benchmark--comment-count ()
-  "Return the total number of synthetic comments in the current workload."
-  (* (org-todoist-benchmark--task-count)
-     org-todoist-benchmark-comments-per-task))
-
 (defun org-todoist-benchmark--progress (fmt &rest args)
   "Print a benchmark progress message built from FMT and ARGS."
   (when org-todoist-benchmark-show-progress
     (princ (apply #'format (concat "[org-todoist-bench] " fmt "\n") args)
            'external-debugging-output)))
-
-(defun org-todoist-benchmark--format-seconds (seconds)
-  "Format SECONDS for compact progress output."
-  (format "%.3fs" seconds))
-
-(defun org-todoist-benchmark--project-id (project)
-  (format "project-%02d" project))
-
-(defun org-todoist-benchmark--section-id (project section)
-  (format "section-%02d-%02d" project section))
-
-(defun org-todoist-benchmark--task-id (project section task)
-  (format "task-%02d-%02d-%04d" project section task))
 
 (defun org-todoist-benchmark--headline (level title props &optional todo)
   (concat (make-string level ?*)
@@ -81,17 +57,17 @@
              1
              (format "Project %02d" project)
              `(("TODOIST_TYPE" . "PROJECT")
-               ("tid" . ,(org-todoist-benchmark--project-id project))))
+               ("tid" . ,(format "project-%02d" project))))
             chunks)
       (dotimes (section org-todoist-benchmark-sections-per-project)
         (push (org-todoist-benchmark--headline
                2
                (format "Section %02d-%02d" project section)
                `(("TODOIST_TYPE" . "SECTION")
-                 ("tid" . ,(org-todoist-benchmark--section-id project section))))
+                 ("tid" . ,(format "section-%02d-%02d" project section))))
               chunks)
         (dotimes (task org-todoist-benchmark-tasks-per-section)
-          (let ((task-id (org-todoist-benchmark--task-id project section task)))
+          (let ((task-id (format "task-%02d-%02d-%04d" project section task)))
             (push (org-todoist-benchmark--headline
                    3
                    (format "Task %02d-%02d-%04d" project section task)
@@ -106,18 +82,18 @@
 (defun org-todoist-benchmark--response ()
   (let (projects sections items notes)
     (dotimes (project org-todoist-benchmark-project-count)
-      (let ((project-id (org-todoist-benchmark--project-id project)))
+      (let ((project-id (format "project-%02d" project)))
         (push `((id . ,project-id)
                 (name . ,(format "Project %02d" project)))
               projects)
         (dotimes (section org-todoist-benchmark-sections-per-project)
-          (let ((section-id (org-todoist-benchmark--section-id project section)))
+          (let ((section-id (format "section-%02d-%02d" project section)))
             (push `((id . ,section-id)
                     (project_id . ,project-id)
                     (name . ,(format "Section %02d-%02d" project section)))
                   sections)
             (dotimes (task org-todoist-benchmark-tasks-per-section)
-              (let ((task-id (org-todoist-benchmark--task-id project section task)))
+              (let ((task-id (format "task-%02d-%02d-%04d" project section task)))
                 (push `((id . ,task-id)
                         (project_id . ,project-id)
                         (section_id . ,section-id)
@@ -155,21 +131,26 @@
          parse-time)
     (unwind-protect
         (progn
-          (org-todoist-benchmark--progress
+         (org-todoist-benchmark--progress
            "starting workload: %d projects, %d sections/project, %d tasks/section, %d comments/task (%d tasks, %d comments total)"
            org-todoist-benchmark-project-count
            org-todoist-benchmark-sections-per-project
            org-todoist-benchmark-tasks-per-section
            org-todoist-benchmark-comments-per-task
-           (org-todoist-benchmark--task-count)
-           (org-todoist-benchmark--comment-count))
+           (* org-todoist-benchmark-project-count
+              org-todoist-benchmark-sections-per-project
+              org-todoist-benchmark-tasks-per-section)
+           (* org-todoist-benchmark-project-count
+              org-todoist-benchmark-sections-per-project
+              org-todoist-benchmark-tasks-per-section
+              org-todoist-benchmark-comments-per-task))
           (setq phase-start (float-time))
           (org-todoist-benchmark--progress "[1/4] generating synthetic org and response payloads")
           (setq baseline (org-todoist-benchmark--org-string))
           (setq response (org-todoist-benchmark--response))
           (org-todoist-benchmark--progress
            "[1/4] done in %s"
-           (org-todoist-benchmark--format-seconds (- (float-time) phase-start)))
+           (format "%.3fs" (- (float-time) phase-start)))
           (with-temp-file org-todoist-file
             (insert baseline))
           (with-temp-file (expand-file-name "SYNC-BUFFER" org-todoist-storage-dir)
@@ -179,7 +160,7 @@
           (setq ast (org-todoist--file-ast))
           (org-todoist-benchmark--progress
            "[2/4] done in %s"
-           (org-todoist-benchmark--format-seconds (- (float-time) phase-start)))
+           (format "%.3fs" (- (float-time) phase-start)))
           (setq phase-start (float-time))
           (org-todoist-benchmark--progress "[3/4] benchmarking push generation")
           (setq push-time
@@ -187,7 +168,7 @@
                   (org-todoist--push ast (org-todoist--get-last-sync-buffer-ast))))
           (org-todoist-benchmark--progress
            "[3/4] done in %s"
-           (org-todoist-benchmark--format-seconds (car push-time)))
+           (format "%.3fs" (car push-time)))
           (setq phase-start (float-time))
           (org-todoist-benchmark--progress "[4/4] benchmarking response parsing")
           (setq parse-time
@@ -195,10 +176,10 @@
                   (org-todoist--parse-response response ast)))
           (org-todoist-benchmark--progress
            "[4/4] done in %s"
-           (org-todoist-benchmark--format-seconds (car parse-time)))
+           (format "%.3fs" (car parse-time)))
           (org-todoist-benchmark--progress
            "finished in %s total"
-           (org-todoist-benchmark--format-seconds (- (float-time) started-at)))
+           (format "%.3fs" (- (float-time) started-at)))
           (princ
            (json-encode
             `((projects . ,org-todoist-benchmark-project-count)
