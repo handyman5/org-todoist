@@ -13,6 +13,11 @@ What is included:
   - Generates a matching fake Todoist sync response in memory.
   - Measures `org-todoist--push` and `org-todoist--parse-response` independently with `benchmark-run`.
   - Prints a compact JSON result so it is easy to compare across commits and branches.
+- `bench/run-synthetic-benchmark.el`
+  - Loads the package and benchmark harness in batch mode.
+  - Allows workload sizing overrides via environment variables.
+- `Makefile`
+  - Adds a `bench-synthetic` target so the benchmark can be run with one command.
 
 The benchmark does not try to model every real-world detail perfectly. Its purpose is to provide a stable, repeatable workload that exercises the same broad hot paths:
 
@@ -26,14 +31,17 @@ The benchmark does not try to model every real-world detail perfectly. Its purpo
 Suggested invocation:
 
 ```bash
-emacs --batch -Q \
-  -L /path/to/org-todoist \
-  -L /path/to/org \
-  -L /path/to/s \
-  -L /path/to/dash \
-  -L /path/to/ts \
-  -l /path/to/org-todoist.el \
-  -l /path/to/bench/synthetic-benchmark.el
+make bench-synthetic
+```
+
+Optional workload overrides:
+
+```bash
+ORG_TODOIST_BENCH_PROJECTS=40 \
+ORG_TODOIST_BENCH_SECTIONS_PER_PROJECT=8 \
+ORG_TODOIST_BENCH_TASKS_PER_SECTION=60 \
+ORG_TODOIST_BENCH_COMMENTS_PER_TASK=3 \
+make bench-synthetic
 ```
 
 Expected output shape:

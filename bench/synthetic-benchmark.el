@@ -152,5 +152,6 @@
       (ignore-errors (delete-file org-todoist-file))
       (ignore-errors (delete-directory org-todoist-storage-dir t)))))
 
-(when noninteractive
+(when (and noninteractive
+           (not (bound-and-true-p org-todoist-benchmark-skip-auto-run)))
   (org-todoist-benchmark-run))
