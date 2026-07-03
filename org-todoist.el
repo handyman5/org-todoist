@@ -731,6 +731,156 @@ the Todoist project, section, and optionally parent task."
         (if res res "*"))
     "*"))
 
+(defvar org-todoist--ast-index nil
+  "Dynamic lookup cache for ASTs participating in the current sync operation.")
+
+(defun org-todoist--ancestor-get (ancestors type)
+  "Return the cached ancestor node for TYPE from ANCESTORS."
+  (alist-get type ancestors nil nil #'string=))
+
+(defun org-todoist--ancestor-set (ancestors type value)
+  "Return ANCESTORS with TYPE associated to VALUE."
+  (let ((rest (cl-remove type ancestors :key #'car :test #'string=)))
+    (if value
+        (cons (cons type value) rest)
+      rest)))
+
+(defun org-todoist--push-match-key (TYPE ID PROJECT-ID)
+  "Return the sync-match key for a headline with TYPE, ID and PROJECT-ID."
+  (when (and TYPE ID)
+    (if (and (string= TYPE org-todoist--section-type)
+             (string= ID org-todoist--default-id))
+        (list TYPE ID PROJECT-ID)
+      (list TYPE ID))))
+
+(defun org-todoist--build-ast-index (AST &optional create-temp-ids)
+  "Build lookup caches for Todoist headlines within AST.
+When CREATE-TEMP-IDS is non-nil, assign temp ids to unsynced nodes."
+  (let ((by-id (make-hash-table :test 'equal))
+        (by-type-and-id (make-hash-table :test 'equal))
+        (by-push-key (make-hash-table :test 'equal))
+        (by-node (make-hash-table :test 'eq)))
+    (cl-labels
+        ((walk-container (container context)
+           (dolist (child (org-element-contents container))
+             (when (eq (org-element-type child) 'headline)
+               (walk-headline child context))))
+         (walk-headline (hl context)
+           (let* ((type (org-todoist--get-todoist-type hl))
+                  (id (org-todoist--get-prop hl org-todoist--id-property))
+                  (temp-id (unless id (org-todoist--get-prop hl "temp_id")))
+                  (own-tags (copy-sequence (org-element-property :tags hl)))
+                  (tags (copy-sequence (plist-get context :tags)))
+                  (ignored (or (plist-get context :ignored)
+                               (member type `(,org-todoist--user-node-type
+                                              ,org-todoist--metadata-node-type
+                                              ,org-todoist--ignored-node-type)))))
+             (dolist (tag own-tags)
+               (cl-pushnew tag tags :test #'equal))
+             (unless (or ignored id temp-id (not create-temp-ids))
+               (setq temp-id (org-id-uuid))
+               (org-todoist--add-prop hl "temp_id" temp-id))
+             (let* ((effective-id (or id temp-id))
+                    (taskp (string-equal type org-todoist--task-type))
+                    (ancestors (plist-get context :ancestors))
+                    (project-id (when-let ((project
+                                            (org-todoist--ancestor-get ancestors org-todoist--project-type)))
+                                  (org-todoist--id-or-temp-id project)))
+                    (push-key (org-todoist--push-match-key type id project-id))
+                    (meta (list :effective-id effective-id
+                                :ignored ignored
+                                :tags tags
+                                :ancestors ancestors
+                                :push-key push-key
+                                :description (and taskp
+                                                  (mapconcat #'org-todoist-org-element-to-string
+                                                             (org-todoist--get-description-elements hl)))
+                                :comments (and taskp
+                                               (--map (org-todoist--note-text it)
+                                                      (org-todoist--get-comments hl)))))
+                    (child-context (list :ignored ignored
+                                         :tags tags
+                                         :ancestors ancestors)))
+               (puthash hl meta by-node)
+               (when id
+                 (puthash id hl by-id)
+                 (when type
+                   (puthash (cons type id) hl by-type-and-id))
+                 (when push-key
+                   (puthash push-key hl by-push-key)))
+               (cond
+                ((string= type org-todoist--project-type)
+                 (setq ancestors (org-todoist--ancestor-set ancestors org-todoist--project-type hl))
+                 (setq ancestors (org-todoist--ancestor-set ancestors org-todoist--section-type nil))
+                 (setq ancestors (org-todoist--ancestor-set ancestors org-todoist--task-type nil)))
+                ((string= type org-todoist--section-type)
+                 (setq ancestors (org-todoist--ancestor-set ancestors org-todoist--section-type hl))
+                 (setq ancestors (org-todoist--ancestor-set ancestors org-todoist--task-type nil)))
+                ((string= type org-todoist--task-type)
+                 (setq ancestors (org-todoist--ancestor-set ancestors org-todoist--task-type hl))))
+               (setq child-context (plist-put child-context :ancestors ancestors))
+               (walk-container hl child-context)))))
+      (walk-container AST (list :ignored nil
+                                :tags nil
+                                :ancestors nil)))
+    (list :root (org-todoist--root AST)
+          :by-id by-id
+          :by-type-and-id by-type-and-id
+          :by-push-key by-push-key
+          :by-node by-node)))
+
+(defun org-todoist--ast-index-for (AST)
+  "Return the active lookup cache for AST, if one is available."
+  (when AST
+    (let ((root (org-todoist--root AST)))
+      (cl-find-if (lambda (index)
+                    (eq (plist-get index :root) root))
+                  org-todoist--ast-index))))
+
+(defun org-todoist--ast-index-node-meta (NODE)
+  "Return cached metadata for NODE, when available."
+  (when-let ((index (org-todoist--ast-index-for NODE)))
+    (gethash NODE (plist-get index :by-node))))
+
+(defun org-todoist--ast-index-valid-node-p (AST NODE)
+  "Return non-nil when NODE belongs to AST and falls within its subtree."
+  (and (eq (org-todoist--root NODE) (org-todoist--root AST))
+       (memq AST (org-element-lineage NODE nil t))))
+
+(defun org-todoist--ast-index-lookup (AST INDEX-KEY LOOKUP-KEY)
+  "Return LOOKUP-KEY from INDEX-KEY within AST, when valid."
+  (when-let* ((index (org-todoist--ast-index-for AST))
+              (node (gethash LOOKUP-KEY (plist-get index INDEX-KEY))))
+    (when (org-todoist--ast-index-valid-node-p AST node)
+      node)))
+
+(defun org-todoist--ast-index-get (AST TYPE ID)
+  "Return the indexed node for TYPE and ID within AST, when valid.
+
+The returned node must belong to the same parsed tree as AST and still
+fall within AST's subtree."
+  (org-todoist--ast-index-lookup AST
+                                 (if TYPE :by-type-and-id :by-id)
+                                 (if TYPE (cons TYPE ID) ID)))
+
+(defun org-todoist--ast-index-track-node (NODE)
+  "Insert NODE into the active lookup index for its AST."
+  (when-let ((index (org-todoist--ast-index-for NODE)))
+    (when-let ((id (org-todoist--get-prop NODE org-todoist--id-property)))
+      (let* ((type (org-todoist--get-todoist-type NODE t))
+             (meta (org-todoist--ast-index-node-meta NODE))
+             (push-key (and meta (plist-get meta :push-key))))
+        (puthash id NODE (plist-get index :by-id))
+        (when type
+          (puthash (cons type id)
+                   NODE
+                   (plist-get index :by-type-and-id)))
+        (when push-key
+          (puthash push-key
+                   NODE
+                   (plist-get index :by-push-key))))))
+  NODE)
+
 (defun org-todoist--set-last-sync-buffer (AST)
   "Store the last org syntax tree AST."
   (with-temp-file (org-todoist--storage-file org-todoist--sync-buffer-file)
@@ -769,7 +919,9 @@ the Todoist project, section, and optionally parent task."
 
 (defun org-todoist--get-comments-text (HEADLINE)
   "Extract all Todoist comments under HEADLINE."
-  (--map (org-todoist--note-text it) (org-todoist--get-comments HEADLINE)))
+  (if-let ((meta (org-todoist--ast-index-node-meta HEADLINE)))
+      (plist-get meta :comments)
+    (--map (org-todoist--note-text it) (org-todoist--get-comments HEADLINE))))
 
                                         ;API Requests;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defun org-todoist--select-user (TEXT)
@@ -1379,14 +1531,16 @@ from TIMESTAMP and creates a new timestamp with them as start properties."
 
 (defun org-todoist--get-tags (NODE)
   "Get all tags of NODE, including inherited tags."
-  (let ((all-tags nil))
-    (org-element-lineage-map NODE
-        (lambda (hl) (let ((tags (org-element-property :tags hl)))
-                       (when tags
-                         (dolist (tag tags)
-                           (cl-pushnew tag all-tags)))))
-      'headline t)
-    all-tags))
+  (if-let ((meta (org-todoist--ast-index-node-meta NODE)))
+      (plist-get meta :tags)
+    (let ((all-tags nil))
+      (org-element-lineage-map NODE
+          (lambda (hl) (let ((tags (org-element-property :tags hl)))
+                         (when tags
+                           (dolist (tag tags)
+                             (cl-pushnew tag all-tags)))))
+        'headline t)
+      all-tags)))
 
 (defun org-todoist--get-labels (TAGS)
   "Filter TAGS to exclude tags that should not be Todoist labels."
@@ -1420,8 +1574,11 @@ Use this when pushing updates (we don't want to send id=default) to Todoist."
 
 (defun org-todoist--is-ignored (NODE)
   "If the NODE should be ignored."
-  (or (member (org-todoist--get-todoist-type NODE t) `(,org-todoist--user-node-type ,org-todoist--metadata-node-type))
-      (org-element-lineage-map NODE #'org-todoist--is-ignored-type 'headline t t)))
+  (if-let ((meta (org-todoist--ast-index-node-meta NODE)))
+      (plist-get meta :ignored)
+    (or (member (org-todoist--get-todoist-type NODE t)
+                `(,org-todoist--user-node-type ,org-todoist--metadata-node-type))
+        (org-element-lineage-map NODE #'org-todoist--is-ignored-type 'headline t t))))
 
 (defun org-todoist--is-ignored-type (NODE)
   "If the NODE has the `org-todoist--ignored-node-type'."
@@ -1457,10 +1614,21 @@ EFF is the effort number in minutes."
         `(("amount" . ,(round (/ sec-diff 60))) ("unit" . "minute")))
     (when eff `(("amount" . ,(round eff)) ("unit" . "minute")))))
 
+(defun org-todoist--push-match-node (NODE AST)
+  "Return the node in AST that should be synced against NODE."
+  (when-let* ((meta (org-todoist--ast-index-node-meta NODE))
+              (key (plist-get meta :push-key)))
+    (org-todoist--ast-index-lookup AST :by-push-key key)))
+
 (defun org-todoist--push (ast old)
   "Create commands necessary to transform syntax tree from OLD to AST."
-  (let ((commands nil))
+  (let* ((commands nil)
+         (org-todoist--ast-index
+          (delq nil (list (org-todoist--build-ast-index ast t)
+                          (and old (org-todoist--build-ast-index old))))))
     (org-todoist--label-default-sections ast)
+    (when old
+      (org-todoist--label-default-sections old))
     (org-element-map ast 'headline
       (lambda (hl)
         ;; TODO would be easier as oop, need to learn lisp oop
@@ -1488,7 +1656,7 @@ EFF is the effort number in minutes."
                (comments (org-todoist--get-comments-text hl))
                ;; (lr (org-element-property :LAST_REPEAT hl))
                ;; (last-repeat (when (and lr is-recurring) (org-timestamp-from-string lr)))
-               (oldtask (org-todoist--get-by-id nil id old))
+               (oldtask (org-todoist--push-match-node hl old))
                (oldsection (org-todoist--get-section-id-position-non-default oldtask))
                (oldparenttask (org-todoist--get-task-id-position oldtask))
                (oldproj (org-todoist--get-project-id-position oldtask))
@@ -1596,8 +1764,10 @@ EFF is the effort number in minutes."
                        (when (or
                               (not (string-equal title oldtitle))
                               (not (equal desc olddesc))
-                              (not (string-equal (org-element-property :raw-value sch) (org-element-property :raw-value oldsch)))
-                              (not (string-equal (org-element-property :raw-value dead) (org-element-property :raw-value olddead)))
+                              (not (string-equal (org-element-property :raw-value sch)
+                                                 (org-element-property :raw-value oldsch)))
+                              (not (string-equal (org-element-property :raw-value dead)
+                                                 (org-element-property :raw-value olddead)))
                               (not (equal eff oldeff))
                               (not (equal pri oldpri))
                               (not (equal labels oldlabels))
@@ -1736,7 +1906,7 @@ EFF is the effort number in minutes."
             (let ((id (org-todoist--get-prop hl org-todoist--id-property))
                   (type (org-todoist--get-todoist-type hl)))
               (when id
-                (let ((new (org-todoist--get-by-id type id ast)))
+                (let ((new (org-todoist--push-match-node hl ast)))
                   (unless new
                     ;; item was deleted (or archived to another file...)
                     (cond
@@ -1789,7 +1959,8 @@ EFF is the effort number in minutes."
 
 (defun org-todoist--parse-response (RESPONSE AST)
   "Parse Todoist sync RESPONSE alist and update AST."
-  (let ((tasks (assoc-default 'items RESPONSE))
+  (let ((org-todoist--ast-index (list (org-todoist--build-ast-index AST)))
+        (tasks (assoc-default 'items RESPONSE))
         (projects (assoc-default 'projects RESPONSE))
         (collab (assoc-default 'collaborators RESPONSE))
         (sections (assoc-default 'sections RESPONSE))
@@ -2332,7 +2503,9 @@ CHECKED and DELETED are from the Todoist API response."
 
 (defun org-todoist--description-text (NODE)
   "Combine all description elements under NODE."
-  (mapconcat #'org-todoist-org-element-to-string (org-todoist--get-description-elements NODE)))
+  (if-let ((meta (org-todoist--ast-index-node-meta NODE)))
+      (plist-get meta :description)
+    (mapconcat #'org-todoist-org-element-to-string (org-todoist--get-description-elements NODE))))
 
 (defun org-todoist--category-node-query-or-create (AST DEFAULT TYPE)
   "Find or create the first node of TODOIST_TYPE TYPE under AST.
@@ -2398,17 +2571,25 @@ QUERY takes a single argument which is the current node."
 (defun org-todoist--get-by-id (TYPE ID AST)
   "Find the first item of TODOIST_TYPE TYPE with ID in the syntax tree AST."
   (when ID
-    (org-element-map AST 'headline
-      (lambda (hl) (when (and (or (null TYPE)
+    (or (org-todoist--ast-index-get AST TYPE ID)
+        (let ((found
+               (org-element-map AST 'headline
+                 (lambda (hl)
+                   (when (and (or (null TYPE)
                                   (string-equal (org-todoist--get-prop hl org-todoist--type) TYPE))
                               (string= (org-todoist--get-prop hl org-todoist--id-property) ID))
                      hl))
-      nil t)))
+                 nil t)))
+          (when found
+            (org-todoist--ast-index-track-node found))
+          found))))
 
 (defun org-todoist--id-or-temp-id (NODE)
   "Get the `org-todoist--id-property' or \"temp_id\" property of NODE."
-  (let ((id (org-todoist--get-prop NODE org-todoist--id-property)))
-    (or id (org-todoist--get-prop NODE "temp_id"))))
+  (if-let ((meta (and NODE (org-todoist--ast-index-node-meta NODE))))
+      (plist-get meta :effective-id)
+    (let ((id (org-todoist--get-prop NODE org-todoist--id-property)))
+      (or id (org-todoist--get-prop NODE "temp_id")))))
 
 (defun org-todoist--get-project-id-position (NODE)
   "Gets the ID of the project headline the NODE is under."
@@ -2425,10 +2606,13 @@ QUERY takes a single argument which is the current node."
 (defun org-todoist--get-parent-of-type (TYPE NODE &optional FIRST)
   "Gets the parent(s) of NODE with TODOIST_TYPE TYPE.
 If FIRST, only get the first matching parent."
-  (org-element-lineage-map NODE
-      (lambda (parent) (when (string= (org-todoist--get-todoist-type parent) TYPE)
-                         parent))
-    'headline nil FIRST))
+  (or (when FIRST
+        (when-let* ((meta (and NODE (org-todoist--ast-index-node-meta NODE))))
+          (org-todoist--ancestor-get (plist-get meta :ancestors) TYPE)))
+      (org-element-lineage-map NODE
+          (lambda (parent) (when (string= (org-todoist--get-todoist-type parent) TYPE)
+                             parent))
+        'headline nil FIRST)))
 
 (defun org-todoist--get-parent-of-element-type (TYPE NODE)
   "Gets the parent(s) of NODE with `org-element-type' TYPE."
