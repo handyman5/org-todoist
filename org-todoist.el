@@ -737,23 +737,18 @@ the Todoist project, section, and optionally parent task."
 (defun org-todoist--build-ast-index (AST)
   "Build lookup tables for Todoist headlines within AST."
   (let ((by-id (make-hash-table :test 'equal))
-        (by-type-and-id (make-hash-table :test 'equal))
-        (by-temp-id (make-hash-table :test 'equal)))
+        (by-type-and-id (make-hash-table :test 'equal)))
     (org-element-map AST 'headline
       (lambda (hl)
-        (let* ((temp-id (org-todoist--get-prop hl "temp_id"))
-               (id (org-todoist--get-prop hl org-todoist--id-property))
+        (let* ((id (org-todoist--get-prop hl org-todoist--id-property))
                (type (and id (org-todoist--get-todoist-type hl t))))
-          (when temp-id
-          (puthash temp-id hl by-temp-id))
           (when id
             (puthash id hl by-id)
             (when type
               (puthash (cons type id) hl by-type-and-id))))))
     (list :root (org-todoist--root AST)
           :by-id by-id
-          :by-type-and-id by-type-and-id
-          :by-temp-id by-temp-id)))
+          :by-type-and-id by-type-and-id)))
 
 (defun org-todoist--ast-index-for (AST)
   "Return the active lookup index for AST, if one is available."
@@ -778,8 +773,6 @@ fall within AST's subtree."
 (defun org-todoist--ast-index-track-node (NODE)
   "Insert NODE into the active lookup index for its AST."
   (when-let ((index (org-todoist--ast-index-for NODE)))
-    (when-let ((temp-id (org-todoist--get-prop NODE "temp_id")))
-      (puthash temp-id NODE (plist-get index :by-temp-id)))
     (when-let ((id (org-todoist--get-prop NODE org-todoist--id-property)))
       (let ((type (org-todoist--get-todoist-type NODE t)))
         (puthash id NODE (plist-get index :by-id))
