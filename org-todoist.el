@@ -731,55 +731,49 @@ the Todoist project, section, and optionally parent task."
         (if res res "*"))
     "*"))
 
-(defvar org-todoist--ast-indexes nil
-  "Dynamic cache of AST lookup indexes for the current sync operation.")
-
-(defun org-todoist--ast-index-key (TYPE ID)
-  "Build an index key for TODOIST_TYPE TYPE and ID."
-  (cons TYPE ID))
+(defvar org-todoist--ast-index nil
+  "Dynamic lookup index for the AST being updated in the current sync operation.")
 
 (defun org-todoist--build-ast-index (AST)
   "Build lookup tables for Todoist headlines within AST."
   (let ((by-id (make-hash-table :test 'equal))
         (by-type-and-id (make-hash-table :test 'equal))
-        (by-temp-id (make-hash-table :test 'equal))
-        (projects nil)
-        (sections nil))
+        (by-temp-id (make-hash-table :test 'equal)))
     (org-element-map AST 'headline
       (lambda (hl)
-        (when-let* ((temp-id (org-todoist--get-prop hl "temp_id")))
+        (let* ((temp-id (org-todoist--get-prop hl "temp_id"))
+               (id (org-todoist--get-prop hl org-todoist--id-property))
+               (type (and id (org-todoist--get-todoist-type hl t))))
+          (when temp-id
           (puthash temp-id hl by-temp-id))
-        (when-let* ((id (org-todoist--get-prop hl org-todoist--id-property)))
-          (let ((type (org-todoist--get-todoist-type hl t)))
-            (cond
-             ((string= type org-todoist--project-type)
-              (push hl projects))
-             ((string= type org-todoist--section-type)
-              (push hl sections)))
+          (when id
             (puthash id hl by-id)
             (when type
-              (puthash (org-todoist--ast-index-key type id) hl by-type-and-id))))))
-    (list :by-id by-id
+              (puthash (cons type id) hl by-type-and-id))))))
+    (list :root (org-todoist--root AST)
+          :by-id by-id
           :by-type-and-id by-type-and-id
-          :by-temp-id by-temp-id
-          :projects (nreverse projects)
-          :sections (nreverse sections))))
+          :by-temp-id by-temp-id)))
 
 (defun org-todoist--ast-index-for (AST)
   "Return the active lookup index for AST, if one is available."
-  (when (and AST org-todoist--ast-indexes)
-    (gethash (org-todoist--root AST) org-todoist--ast-indexes)))
+  (when (and AST org-todoist--ast-index
+             (eq (plist-get org-todoist--ast-index :root)
+                 (org-todoist--root AST)))
+    org-todoist--ast-index))
 
-(defun org-todoist--node-within-subtree-p (NODE SUBTREE)
-  "Return non-nil when NODE is equal to or nested under SUBTREE."
-  (or (eq NODE SUBTREE)
-      (catch 'found
-        (org-element-lineage-map NODE
-            (lambda (parent)
-              (when (eq parent SUBTREE)
-                (throw 'found t)))
-          nil t)
-        nil)))
+(defun org-todoist--ast-index-get (AST TYPE ID)
+  "Return the indexed node for TYPE and ID within AST, when valid.
+
+The returned node must belong to the same parsed tree as AST and still
+fall within AST's subtree."
+  (when-let* ((index (org-todoist--ast-index-for AST))
+              (node (if TYPE
+                        (gethash (cons TYPE ID) (plist-get index :by-type-and-id))
+                      (gethash ID (plist-get index :by-id)))))
+    (when (and (eq (org-todoist--root node) (org-todoist--root AST))
+               (memq AST (org-element-lineage node nil t)))
+      node)))
 
 (defun org-todoist--ast-index-track-node (NODE)
   "Insert NODE into the active lookup index for its AST."
@@ -788,26 +782,12 @@ the Todoist project, section, and optionally parent task."
       (puthash temp-id NODE (plist-get index :by-temp-id)))
     (when-let ((id (org-todoist--get-prop NODE org-todoist--id-property)))
       (let ((type (org-todoist--get-todoist-type NODE t)))
-        (cond
-         ((string= type org-todoist--project-type)
-          (cl-pushnew NODE (plist-get index :projects) :test #'eq))
-         ((string= type org-todoist--section-type)
-          (cl-pushnew NODE (plist-get index :sections) :test #'eq)))
         (puthash id NODE (plist-get index :by-id))
         (when type
-          (puthash (org-todoist--ast-index-key type id)
+          (puthash (cons type id)
                    NODE
                    (plist-get index :by-type-and-id))))))
   NODE)
-
-(defun org-todoist--ast-index-nodes-of-type (AST TYPE)
-  "Return cached headline nodes of TYPE within AST, when available."
-  (when-let ((index (org-todoist--ast-index-for AST)))
-    (cond
-     ((string= TYPE org-todoist--project-type)
-      (plist-get index :projects))
-     ((string= TYPE org-todoist--section-type)
-      (plist-get index :sections)))))
 
 (defun org-todoist--set-last-sync-buffer (AST)
   "Store the last org syntax tree AST."
@@ -1867,7 +1847,7 @@ EFF is the effort number in minutes."
 
 (defun org-todoist--parse-response (RESPONSE AST)
   "Parse Todoist sync RESPONSE alist and update AST."
-  (let ((org-todoist--ast-indexes (make-hash-table :test 'eq))
+  (let ((org-todoist--ast-index (org-todoist--build-ast-index AST))
         (tasks (assoc-default 'items RESPONSE))
         (projects (assoc-default 'projects RESPONSE))
         (collab (assoc-default 'collaborators RESPONSE))
@@ -1875,9 +1855,6 @@ EFF is the effort number in minutes."
         (comments (assoc-default 'notes RESPONSE))
         (token (assoc-default 'sync_token RESPONSE))
         (tid_mapping (assoc-default 'temp_id_mapping RESPONSE)))
-    (puthash (org-todoist--root AST)
-             (org-todoist--build-ast-index AST)
-             org-todoist--ast-indexes)
     (org-todoist--temp-id-mapping tid_mapping AST)
     (org-todoist--update-users collab AST)
     (org-todoist--update-projects projects AST)
@@ -1890,20 +1867,14 @@ EFF is the effort number in minutes."
 
 (defun org-todoist--temp-id-mapping (TID_MAPPING AST)
   "Add ids to node with a temp_id in AST using TID_MAPPING."
-  (let ((temp-index (and (org-todoist--ast-index-for AST)
-                         (plist-get (org-todoist--ast-index-for AST) :by-temp-id))))
-    (dolist (elem TID_MAPPING)
-      (let* ((tid (car elem))
-             (tidstr (if (symbolp tid) (symbol-name tid) tid))
-             (node (or (and temp-index (gethash tidstr temp-index))
-                       (org-element-map AST 'headline
-                         (lambda (hl)
-                           (when (string= (org-todoist--get-prop hl "temp_id") tidstr)
-                             hl))
-                         nil t))))
-        (when node
-          (org-todoist--ast-index-track-node
-           (org-todoist--insert-id node (cdr elem))))))))
+  (dolist (elem TID_MAPPING)
+    (org-element-map AST 'headline
+      (lambda (hl)
+        (let* ((tid (car elem))
+               (tidstr (if (symbolp tid) (symbol-name tid) tid)))
+          (when (string= (org-todoist--get-prop hl "temp_id") tidstr)
+            (org-todoist--insert-id hl (cdr elem)))))
+      nil t)))
 
 (defun org-todoist--update-comments (COMMENTS AST)
   "Update comments in AST using COMMENTS section of Todoist sync API response."
@@ -2046,15 +2017,13 @@ EFF is the effort number in minutes."
 
 (defun org-todoist--project-nodes (AST)
   "Get all Todoist project nodes within the syntax tree, AST."
-  (or (org-todoist--ast-index-nodes-of-type AST org-todoist--project-type)
-      (org-element-map AST 'headline
-        (lambda (hl) (when (string-equal (org-todoist--get-todoist-type hl) org-todoist--project-type) hl)))))
+  (org-element-map AST 'headline
+    (lambda (hl) (when (string-equal (org-todoist--get-todoist-type hl) org-todoist--project-type) hl))))
 
 (defun org-todoist--section-nodes (AST)
   "Get all Todoist section nodes within the syntax tree, AST."
-  (or (org-todoist--ast-index-nodes-of-type AST org-todoist--section-type)
-      (org-element-map AST 'headline
-        (lambda (hl) (when (string-equal (org-todoist--get-todoist-type hl) org-todoist--section-type) hl)))))
+  (org-element-map AST 'headline
+    (lambda (hl) (when (string-equal (org-todoist--get-todoist-type hl) org-todoist--section-type) hl))))
 
 (defun org-todoist--get-headline-level (NODE)
   "Get the nearest headline level of NODE."
@@ -2073,7 +2042,7 @@ Skip properties in SKIP list."
     (org-todoist--add-all-properties node PROPERTIES SKIP)
     (when DESCRIPTION (org-todoist--add-description node DESCRIPTION))
     (when PARENT (org-element-adopt PARENT node))
-    (org-todoist--ast-index-track-node node)))
+    node))
 
 (defun org-todoist--add-description (NODE DESCRIPTION)
   "Add DESCRIPTION text to NODE."
@@ -2119,7 +2088,7 @@ from PARENT."
         ;; (org-todoist--insert-id updated ID)
         (org-element-put-property updated :title TEXT)
         (org-todoist--replace-description updated DESCRIPTION)
-        (org-todoist--ast-index-track-node updated))
+        updated)
     (org-todoist--create-node TYPE TEXT DESCRIPTION PROPERTIES PARENT SKIP)))
 
 (defun org-todoist--closed-date (TASK)
@@ -2488,18 +2457,7 @@ QUERY takes a single argument which is the current node."
 (defun org-todoist--get-by-id (TYPE ID AST)
   "Find the first item of TODOIST_TYPE TYPE with ID in the syntax tree AST."
   (when ID
-    (let* ((ast-root (and AST (org-todoist--root AST)))
-           (index (org-todoist--ast-index-for AST))
-           (indexed (when index
-                      (if TYPE
-                          (gethash (org-todoist--ast-index-key TYPE ID)
-                                   (plist-get index :by-type-and-id))
-                        (gethash ID (plist-get index :by-id)))))
-           (indexed-valid (and indexed
-                               (eq (org-todoist--root indexed) ast-root)
-                               (org-todoist--node-within-subtree-p indexed AST))))
-      (if indexed-valid
-          indexed
+    (or (org-todoist--ast-index-get AST TYPE ID)
         (let ((found
                (org-element-map AST 'headline
                  (lambda (hl)
@@ -2510,7 +2468,7 @@ QUERY takes a single argument which is the current node."
                  nil t)))
           (when found
             (org-todoist--ast-index-track-node found))
-          found)))))
+          found))))
 
 (defun org-todoist--id-or-temp-id (NODE)
   "Get the `org-todoist--id-property' or \"temp_id\" property of NODE."
