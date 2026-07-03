@@ -731,6 +731,35 @@ the Todoist project, section, and optionally parent task."
         (if res res "*"))
     "*"))
 
+(defvar org-todoist--default-section-cache nil
+  "Dynamic cache of default sections for the current response parse.")
+
+(defun org-todoist--project-cache-key (PROJECT)
+  "Return the cache key for PROJECT."
+  (and PROJECT (org-todoist--id-or-temp-id PROJECT)))
+
+(defun org-todoist--track-default-section (SECTION)
+  "Remember SECTION in the current default-section cache when applicable."
+  (when (and org-todoist--default-section-cache
+             SECTION
+             (string= (org-todoist--get-todoist-type SECTION t) org-todoist--section-type)
+             (string= (org-element-property :raw-value SECTION) org-todoist--default-section-name))
+    (when-let ((project (org-todoist--get-parent-of-type org-todoist--project-type SECTION t)))
+      (puthash (org-todoist--project-cache-key project)
+               SECTION
+               org-todoist--default-section-cache)))
+  SECTION)
+
+(defun org-todoist--default-section-node (PROJECT)
+  "Return the cached default section under PROJECT, if one exists."
+  (when-let* ((project PROJECT)
+              (key (org-todoist--project-cache-key project)))
+    (or (gethash key org-todoist--default-section-cache)
+        (let ((section (org-todoist--get-by-id org-todoist--section-type org-todoist--default-id project)))
+          (when section
+            (puthash key section org-todoist--default-section-cache))
+          section))))
+
 (defun org-todoist--set-last-sync-buffer (AST)
   "Store the last org syntax tree AST."
   (with-temp-file (org-todoist--storage-file org-todoist--sync-buffer-file)
@@ -1789,7 +1818,8 @@ EFF is the effort number in minutes."
 
 (defun org-todoist--parse-response (RESPONSE AST)
   "Parse Todoist sync RESPONSE alist and update AST."
-  (let ((tasks (assoc-default 'items RESPONSE))
+  (let ((org-todoist--default-section-cache (make-hash-table :test 'equal))
+        (tasks (assoc-default 'items RESPONSE))
         (projects (assoc-default 'projects RESPONSE))
         (collab (assoc-default 'collaborators RESPONSE))
         (sections (assoc-default 'sections RESPONSE))
@@ -1860,9 +1890,10 @@ EFF is the effort number in minutes."
     (when-let* ((pid (org-todoist--get-prop proj 'parent_id))
                 (parent (org-todoist--get-by-id org-todoist--project-type pid AST)))
       (org-todoist--adopt-sub parent proj))
-    (unless (member org-todoist--default-section-name (org-todoist--get-section-titles proj))
+    (unless (org-todoist--default-section-node proj)
       (let ((default-section (org-todoist--create-node org-todoist--section-type org-todoist--default-section-name nil nil proj)))
-        (org-todoist--add-prop default-section org-todoist--id-property org-todoist--default-id)))))
+        (org-todoist--add-prop default-section org-todoist--id-property org-todoist--default-id)
+        (org-todoist--track-default-section default-section)))))
 
 (defun org-todoist--handle-deletion (node)
   "Handle remote deletion of NODE."
@@ -1981,9 +2012,12 @@ Skip properties in SKIP list."
   (let ((node (org-element-create 'headline `(:title ,TEXT :level ,(+ 1 (org-todoist--get-headline-level PARENT))))))
     (org-todoist--insert-identifier node TYPE)
     (org-todoist--add-all-properties node PROPERTIES SKIP)
+    (when (and (string= TYPE org-todoist--section-type)
+               (string= TEXT org-todoist--default-section-name))
+      (org-todoist--insert-id node org-todoist--default-id))
     (when DESCRIPTION (org-todoist--add-description node DESCRIPTION))
     (when PARENT (org-element-adopt PARENT node))
-    node))
+    (org-todoist--track-default-section node)))
 
 (defun org-todoist--add-description (NODE DESCRIPTION)
   "Add DESCRIPTION text to NODE."
@@ -2029,7 +2063,10 @@ from PARENT."
         ;; (org-todoist--insert-id updated ID)
         (org-element-put-property updated :title TEXT)
         (org-todoist--replace-description updated DESCRIPTION)
-        updated)
+        (when (and (string= TYPE org-todoist--section-type)
+                   (string= TEXT org-todoist--default-section-name))
+          (org-todoist--insert-id updated org-todoist--default-id))
+        (org-todoist--track-default-section updated))
     (org-todoist--create-node TYPE TEXT DESCRIPTION PROPERTIES PARENT SKIP)))
 
 (defun org-todoist--closed-date (TASK)
@@ -2149,7 +2186,7 @@ inactive."
                   (section-id (assoc-default 'section_id data))
                   (section (if section-id
                                (org-todoist--get-by-id org-todoist--section-type section-id proj)
-                             (org-todoist--get-by-id org-todoist--section-type org-todoist--default-id proj)))
+                             (org-todoist--default-section-node proj)))
                   (title (assoc-default 'content data))
                   (description (assoc-default 'description data))
                   (parent-id (assoc-default 'parent_id data))
@@ -2166,7 +2203,7 @@ inactive."
 
                  ;; If unsectioned and doesn't have a parent task, add to the default section in that project
                  (unless (or section parent-id)
-                   (setq section (org-todoist--get-by-id org-todoist--section-type org-todoist--default-id proj)))
+                   (setq section (org-todoist--default-section-node proj)))
 
                  ;; Move to correct section if needed
                  (unless (or parent-id
