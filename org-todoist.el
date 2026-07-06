@@ -448,6 +448,16 @@ Automatically widens the buffer to ensure all content is accessible."
 (defconst org-todoist--no-property-drawer :org-todoist-no-property-drawer
   "Sentinel for headlines without a direct property drawer.")
 
+(defun org-todoist--property-drawer-cache-table ()
+  "Return the property drawer cache, creating it if needed."
+  (or org-todoist--property-drawer-cache
+      (setq org-todoist--property-drawer-cache (make-hash-table :test 'eq))))
+
+(defun org-todoist--property-index-cache-table ()
+  "Return the property index cache, creating it if needed."
+  (or org-todoist--property-index-cache
+      (setq org-todoist--property-index-cache (make-hash-table :test 'eq))))
+
 (defun org-todoist--set-last-response (JSON)
   "Store the last Todoist response JSON to a file."
   (with-temp-file (org-todoist--storage-file org-todoist--last-response-file)
@@ -1307,6 +1317,8 @@ Else check scheduled only."
   "Adopts a DRAWER in the correct location under HL.
 If the new drawer isn't added by the other drawers, it may get pushed under
 the wrong headline!"
+  (when (eq 'property-drawer (org-element-type DRAWER))
+    (puthash HL DRAWER (org-todoist--property-drawer-cache-table)))
   ;; Check for a description to insert before
   (if (eq 'property-drawer (org-element-type DRAWER))
       ;; NOTE Having other drawers before property drawer makes property drawers parse as regular drawers. Avoid this.
@@ -2466,9 +2478,8 @@ If FIRST, only get the first matching parent."
    ((not (eq (org-element-type NODE) 'headline))
     nil)
    (t
-    (unless org-todoist--property-drawer-cache
-      (setq org-todoist--property-drawer-cache (make-hash-table :test 'eq)))
-    (let ((cached (gethash NODE org-todoist--property-drawer-cache 'missing)))
+    (let* ((cache (org-todoist--property-drawer-cache-table))
+           (cached (gethash NODE cache 'missing)))
       (cond
        ((eq cached 'missing)
         (let ((drawer (org-element-map NODE 'property-drawer
@@ -2476,8 +2487,7 @@ If FIRST, only get the first matching parent."
                           (when (eq NODE (org-todoist--first-parent-of-type node 'headline))
                             node))
                         nil t)))
-          (puthash NODE (or drawer org-todoist--no-property-drawer)
-                   org-todoist--property-drawer-cache)
+          (puthash NODE (or drawer org-todoist--no-property-drawer) cache)
           drawer))
        ((eq cached org-todoist--no-property-drawer)
         nil)
@@ -2492,17 +2502,16 @@ If FIRST, only get the first matching parent."
 (defun org-todoist--property-index-for (DRAWER)
   "Return a cached property table for DRAWER."
   (when DRAWER
-    (unless org-todoist--property-index-cache
-      (setq org-todoist--property-index-cache (make-hash-table :test 'eq)))
-    (or (gethash DRAWER org-todoist--property-index-cache)
+    (let ((cache (org-todoist--property-index-cache-table)))
+      (or (gethash DRAWER cache)
         (let ((index (make-hash-table :test 'equal)))
           (org-element-map DRAWER 'node-property
             (lambda (np)
               (puthash (org-todoist--property-key-string (org-element-property :key np))
                        np
                        index)))
-          (puthash DRAWER index org-todoist--property-index-cache)
-          index))))
+          (puthash DRAWER index cache)
+          index)))))
 
 (defun org-todoist--create-property (KEY VALUE)
   "Create node-property element with :key KEY and :value VALUE."
@@ -2597,38 +2606,18 @@ Returns nil if not present"
   "Add or update the values of all properties in the alist PROPERTIES.
 Properties are added to NODE unless they are in plist SKIP.
 RETURNS the mutated NODE."
-  (let* ((type (org-element-type NODE))
-         (drawer (cond
-                  ((eq type 'property-drawer)
-                   NODE)
-                  ((eq type 'headline)
-                   (or (org-todoist--get-property-drawer NODE)
-                       (let ((new-drawer (org-element-create 'property-drawer)))
-                         (org-todoist--adopt-drawer NODE new-drawer)
-                         new-drawer)))
-                  (t
-                   (signal 'todoist--error "Called org-todoist--add-all-properties with invalid type"))))
-         (index (org-todoist--property-index-for drawer)))
-    (dolist (kv PROPERTIES)
-      (unless (member (car kv) SKIP)
-        (let* ((key (org-todoist--get-key (car kv)))
-               (raw-val (cdr kv))
-               (value (org-todoist--get-value
-                       (if (and (or (eq (car kv) 'updated_at)
-                                    (eq (car kv) 'added_at))
-                                raw-val)
-                           (org-todoist-org-element-to-string
-                            (org-todoist--get-ts-from-date raw-val t))
-                         raw-val)))
-               (key-str (org-todoist--property-key-string key))
-               (existing (gethash key-str index)))
-          (if existing
-              (org-element-put-property existing :value value)
-            (let ((prop (org-todoist--create-property key value)))
-              (org-element-adopt drawer prop)
-              (puthash key-str prop index))))))
-    (when (eq type 'headline)
-      drawer))
+  (dolist (kv PROPERTIES)
+    (unless (member (car kv) SKIP)
+      (let ((key (car kv))
+            (val (cdr kv)))
+        ;; Convert timestamps to inactive timestamp format
+        (if (and (or (eq key 'updated_at)
+                     (eq key 'added_at))
+                 val)
+            (org-todoist--add-prop NODE key
+                                   (org-todoist-org-element-to-string
+                                    (org-todoist--get-ts-from-date val t)))
+          (org-todoist--add-prop NODE key val)))))
   NODE)
 
 (defun org-todoist--get-todoist-type (NODE &optional NO-INFER)
