@@ -1802,9 +1802,9 @@ EFF is the effort number in minutes."
     (org-todoist--update-sections sections AST)
     (org-todoist--update-tasks tasks AST)
     (org-todoist--update-comments comments AST)
-    (org-todoist--set-sync-token token)
     (org-todoist--set-last-sync-buffer AST)
-    (org-todoist--update-file AST)))
+    (org-todoist--update-file AST)
+    (org-todoist--set-sync-token token)))
 
 (defun org-todoist--temp-id-mapping (TID_MAPPING AST)
   "Add ids to node with a temp_id in AST using TID_MAPPING."
