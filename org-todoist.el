@@ -441,6 +441,22 @@ Automatically widens the buffer to ensure all content is accessible."
                                         ;Debug data;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defvar org-todoist--sync-err nil "The error from the last sync, if any.")
 (defvar org-todoist-keep-old-sync-tokens nil)
+(defvar org-todoist--property-drawer-cache nil
+  "Eq hash table caching the direct property drawer for each headline.")
+(defvar org-todoist--property-index-cache nil
+  "Eq hash table caching property maps for each property drawer.")
+(defconst org-todoist--no-property-drawer :org-todoist-no-property-drawer
+  "Sentinel for headlines without a direct property drawer.")
+
+(defun org-todoist--property-drawer-cache-table ()
+  "Return the property drawer cache, creating it if needed."
+  (or org-todoist--property-drawer-cache
+      (setq org-todoist--property-drawer-cache (make-hash-table :test 'eq))))
+
+(defun org-todoist--property-index-cache-table ()
+  "Return the property index cache, creating it if needed."
+  (or org-todoist--property-index-cache
+      (setq org-todoist--property-index-cache (make-hash-table :test 'eq))))
 
 (defun org-todoist--set-last-response (JSON)
   "Store the last Todoist response JSON to a file."
@@ -1301,6 +1317,8 @@ Else check scheduled only."
   "Adopts a DRAWER in the correct location under HL.
 If the new drawer isn't added by the other drawers, it may get pushed under
 the wrong headline!"
+  (when (eq 'property-drawer (org-element-type DRAWER))
+    (puthash HL DRAWER (org-todoist--property-drawer-cache-table)))
   ;; Check for a description to insert before
   (if (eq 'property-drawer (org-element-type DRAWER))
       ;; NOTE Having other drawers before property drawer makes property drawers parse as regular drawers. Avoid this.
@@ -2454,9 +2472,46 @@ If FIRST, only get the first matching parent."
 
 (defun org-todoist--get-property-drawer (NODE)
   "Get the property drawer for NODE."
-  (org-element-map NODE 'property-drawer
-    (lambda (node) (when (eq NODE (org-todoist--first-parent-of-type node 'headline)) node))
-    nil t))
+  (cond
+   ((equal (org-element-type NODE) 'property-drawer)
+    NODE)
+   ((not (eq (org-element-type NODE) 'headline))
+    nil)
+   (t
+    (let* ((cache (org-todoist--property-drawer-cache-table))
+           (cached (gethash NODE cache 'missing)))
+      (cond
+       ((eq cached 'missing)
+        (let ((drawer (org-element-map NODE 'property-drawer
+                        (lambda (node)
+                          (when (eq NODE (org-todoist--first-parent-of-type node 'headline))
+                            node))
+                        nil t)))
+          (puthash NODE (or drawer org-todoist--no-property-drawer) cache)
+          drawer))
+       ((eq cached org-todoist--no-property-drawer)
+        nil)
+       (t
+        cached))))))
+
+(defun org-todoist--property-key-string (KEY)
+  "Return canonical string form for KEY."
+  (let ((key (org-todoist--get-key KEY)))
+    (downcase (if (stringp key) key (symbol-name key)))))
+
+(defun org-todoist--property-index-for (DRAWER)
+  "Return a cached property table for DRAWER."
+  (when DRAWER
+    (let ((cache (org-todoist--property-index-cache-table)))
+      (or (gethash DRAWER cache)
+        (let ((index (make-hash-table :test 'equal)))
+          (org-element-map DRAWER 'node-property
+            (lambda (np)
+              (puthash (org-todoist--property-key-string (org-element-property :key np))
+                       np
+                       index)))
+          (puthash DRAWER index cache)
+          index)))))
 
 (defun org-todoist--create-property (KEY VALUE)
   "Create node-property element with :key KEY and :value VALUE."
@@ -2478,12 +2533,14 @@ If FIRST, only get the first matching parent."
   "Check for property KEY in DRAWER and replace value with VALUE if present."
   (when (not (eq (org-element-type DRAWER) 'property-drawer))
     (error "Expected property drawer"))
-  (let ((existing (org-element-map DRAWER 'node-property
-                    (lambda (prop) (when (org-todoist--is-property prop KEY) prop)) nil t)))
+  (let* ((index (org-todoist--property-index-for DRAWER))
+         (key-str (org-todoist--property-key-string KEY))
+         (existing (gethash key-str index)))
     (if existing
-        ;; (org-element-put-property existing (org-todoist--to-symbol KEY) VALUE)
         (org-element-put-property existing :value VALUE)
-      (org-element-adopt DRAWER (org-todoist--create-property KEY VALUE)))))
+      (let ((prop (org-todoist--create-property KEY VALUE)))
+        (org-element-adopt DRAWER prop)
+        (puthash key-str prop index)))))
 
 (defun org-todoist--get-key (KEY)
   "Get the org property key for given KEY.
@@ -2527,12 +2584,10 @@ Returns nil if not present"
   (let ((drawer (if (equal (org-element-type NODE) 'property-drawer)
                     NODE
                   (org-todoist--get-property-drawer NODE)))
-        (key (org-todoist--get-key KEY)))
-    (org-element-map drawer 'node-property
-      (lambda (np)
-        (when (org-todoist--is-property np key)
-          (org-element-property :value np)))
-      nil t)))
+        (key-str (org-todoist--property-key-string KEY)))
+    (when-let ((prop (and drawer
+                          (gethash key-str (org-todoist--property-index-for drawer)))))
+      (org-element-property :value prop))))
 
 (defun org-todoist--remove-prop (NODE KEY)
   "Remove property with KEY from NODE's property drawer."
@@ -2540,11 +2595,12 @@ Returns nil if not present"
          (drawer (if (equal (org-element-type NODE) 'property-drawer)
                      NODE
                    (org-todoist--get-property-drawer NODE)))
-         (prop (when drawer
-                 (org-element-map drawer 'node-property
-                   (lambda (np) (when (org-todoist--is-property np key) np))
-                   nil t))))
-    (when prop (org-element-extract prop))))
+         (key-str (org-todoist--property-key-string key))
+         (index (and drawer (org-todoist--property-index-for drawer)))
+         (prop (and index (gethash key-str index))))
+    (when prop
+      (remhash key-str index)
+      (org-element-extract prop))))
 
 (defun org-todoist--add-all-properties (NODE PROPERTIES &optional SKIP)
   "Add or update the values of all properties in the alist PROPERTIES.
